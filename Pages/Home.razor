@@ -2,6 +2,7 @@
 @inject PackService Pack
 @inject ProgressStore Progress
 @inject IJSRuntime JS
+@implements IDisposable
 
 <PageTitle>Bridges</PageTitle>
 
@@ -10,7 +11,7 @@
         <h1>Bridges</h1>
         <label>
             <select value="@SizeKey(_size)" @onchange="OnSizeChanged">
-                @foreach (var size in Pack.Sizes)
+                @foreach (var size in VisibleSizes)
                 {
                     var solved = Progress.SolvedCount(Pack.PuzzlesOf(size).Select(p => p.Id));
                     var total = Pack.PuzzlesOf(size).Count;
@@ -189,42 +190,75 @@
     private int ViewWidth => _board is null ? 0 : Margin * 2 + (_board.Cols - 1) * Cell;
     private int ViewHeight => _board is null ? 0 : Margin * 2 + (_board.Rows - 1) * Cell;
 
+    // Whether the browser window is portrait-shaped (taller than wide). Drives which sizes are offered.
+    private bool _windowIsPortrait;
+
+    /// <summary>
+    /// Sizes offered in the selector, filtered to the window's orientation: portrait ("Tall")
+    /// puzzles only on portrait windows, square puzzles only on landscape windows. Falls back to
+    /// all sizes if the filter would leave nothing to choose.
+    /// </summary>
+    private IReadOnlyList<PackSize> VisibleSizes
+    {
+        get
+        {
+            var filtered = Pack.Sizes.Where(s => s.IsPortrait == _windowIsPortrait).ToList();
+            return filtered.Count > 0 ? filtered : Pack.Sizes;
+        }
+    }
+
+    private DotNetObjectReference<Home>? _selfRef;
+    private bool _started;
+
     protected override async Task OnInitializedAsync()
     {
         // Pack and progress are already loaded in Program.cs, but guard in case.
         await Pack.LoadAsync();
         await Progress.LoadAsync();
+        // Actual game start happens once we know the window orientation (see OnOrientationChanged),
+        // wired up in OnAfterRenderAsync.
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Register for orientation updates. The JS helper reports the initial state and then
+            // any resize/rotation, so the visible size list always matches the window shape.
+            _selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("bridgesOrientation.register", _selfRef);
+        }
+    }
+
+    /// <summary>Called from JS when the window orientation changes (and once on registration).</summary>
+    [JSInvokable]
+    public void OnOrientationChanged(bool portrait)
+    {
+        _windowIsPortrait = portrait;
 
         if (Pack.Sizes.Count == 0)
         {
-            return; // empty pack; nothing to show
+            return;
         }
 
-        _size = await PickDefaultSizeAsync();
-        NewGame();
+        // Start the first game once we know the orientation.
+        if (!_started)
+        {
+            _started = true;
+            _size = VisibleSizes[0];
+            NewGame();
+        }
+        // If the current selection is no longer visible for this orientation, switch to one that is.
+        else if (!VisibleSizes.Contains(_size))
+        {
+            _size = VisibleSizes[0];
+            NewGame();
+        }
+
+        StateHasChanged();
     }
 
-    /// <summary>
-    /// Choose a starting size that suits the device: a portrait ("Tall") puzzle on phone-shaped
-    /// screens, a square one on wider screens. Falls back to the first available size.
-    /// </summary>
-    private async Task<PackSize> PickDefaultSizeAsync()
-    {
-        bool portrait = false;
-        try
-        {
-            double w = await JS.InvokeAsync<double>("eval", "window.innerWidth");
-            double h = await JS.InvokeAsync<double>("eval", "window.innerHeight");
-            portrait = h > w * 1.1; // clearly taller than wide
-        }
-        catch
-        {
-            // JS unavailable; default to square.
-        }
-
-        var preferred = Pack.Sizes.FirstOrDefault(s => s.IsPortrait == portrait);
-        return preferred == default ? Pack.Sizes[0] : preferred;
-    }
+    public void Dispose() => _selfRef?.Dispose();
 
     private void NewGame()
     {

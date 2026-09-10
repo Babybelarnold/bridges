@@ -27,6 +27,21 @@
         <a class="dismiss">🗙</a>
     </div>
     <script src="_framework/blazor.webassembly.js"></script>
+    <script>
+        // Lets a Blazor component observe window orientation changes (e.g. phone rotation).
+        // The component registers a .NET callback that receives true when the window is portrait.
+        window.bridgesOrientation = {
+            register: function (dotNetRef) {
+                const report = function () {
+                    const portrait = window.innerHeight > window.innerWidth * 1.1;
+                    dotNetRef.invokeMethodAsync('OnOrientationChanged', portrait);
+                };
+                window.addEventListener('resize', report);
+                window.addEventListener('orientationchange', report);
+                report(); // report the initial state immediately
+            }
+        };
+    </script>
 </body>
 
 </html>
