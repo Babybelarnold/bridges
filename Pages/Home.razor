@@ -1,0 +1,369 @@
+﻿@page "/"
+@inject PackService Pack
+@inject ProgressStore Progress
+@inject IJSRuntime JS
+
+<PageTitle>Bridges</PageTitle>
+
+<div class="game">
+    <div class="controls">
+        <h1>Bridges</h1>
+        <label>
+            <select value="@SizeKey(_size)" @onchange="OnSizeChanged">
+                @foreach (var size in Pack.Sizes)
+                {
+                    var solved = Progress.SolvedCount(Pack.PuzzlesOf(size).Select(p => p.Id));
+                    var total = Pack.PuzzlesOf(size).Count;
+                    <option value="@SizeKey(size)">
+                        @(size.IsPortrait ? "Tall" : "Square") @size.Label (@solved/@total)
+                    </option>
+                }
+            </select>
+        </label>
+        <button class="btn" @onclick="NewGame">New puzzle</button>
+        <button class="btn btn-secondary" @onclick="Undo" disabled="@(_history.Count == 0)">Undo</button>
+        <button class="btn btn-secondary" @onclick="ClearBoard">Clear</button>
+        <button class="btn btn-secondary" @onclick="CheckErrors" disabled="@_checking">
+            @if (_checking)
+            {
+                <span class="hourglass" aria-hidden="true">⏳</span> <span>Checking…</span>
+            }
+            else
+            {
+                <text>Check</text>
+            }
+        </button>
+        @if (_checkMessage is not null)
+        {
+            <span class="check-message @(_checkErrors == 0 ? "check-ok" : "check-bad")">@_checkMessage</span>
+        }
+    </div>
+
+    @if (_board is not null)
+    {
+        <div class="board-wrap">
+            <svg class="board" viewBox="0 0 @ViewWidth @ViewHeight" role="img" aria-label="Bridges puzzle board">
+                <defs>
+                    <!-- Deep-to-shallow water -->
+                    <radialGradient id="water" cx="50%" cy="40%" r="75%">
+                        <stop offset="0%" stop-color="#7ec8e3" />
+                        <stop offset="55%" stop-color="#4aa3c7" />
+                        <stop offset="100%" stop-color="#2c7ba3" />
+                    </radialGradient>
+
+                    <!-- Landmass: sandy shore fading to green interior -->
+                    <radialGradient id="land" cx="50%" cy="42%" r="60%">
+                        <stop offset="0%" stop-color="#a8d08d" />
+                        <stop offset="60%" stop-color="#7cb464" />
+                        <stop offset="100%" stop-color="#5c9247" />
+                    </radialGradient>
+                    <radialGradient id="land-done" cx="50%" cy="42%" r="60%">
+                        <stop offset="0%" stop-color="#bfe6a0" />
+                        <stop offset="70%" stop-color="#7ec96a" />
+                        <stop offset="100%" stop-color="#4fae44" />
+                    </radialGradient>
+                    <radialGradient id="land-over" cx="50%" cy="42%" r="60%">
+                        <stop offset="0%" stop-color="#f0b48f" />
+                        <stop offset="70%" stop-color="#e0895f" />
+                        <stop offset="100%" stop-color="#c25f3a" />
+                    </radialGradient>
+
+                    <!-- Plank/rope bridge shading -->
+                    <linearGradient id="plank" x1="0%" y1="0%" x2="0%" y2="100%">
+                        <stop offset="0%" stop-color="#c79a5b" />
+                        <stop offset="50%" stop-color="#a9753a" />
+                        <stop offset="100%" stop-color="#875a28" />
+                    </linearGradient>
+
+                    <!-- Soft shadow so islands sit above the water -->
+                    <filter id="isle-shadow" x="-40%" y="-40%" width="180%" height="180%">
+                        <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#0b3a52" flood-opacity="0.35" />
+                    </filter>
+
+                    <!-- Faint water ripple pattern -->
+                    <pattern id="ripple" width="46" height="46" patternUnits="userSpaceOnUse" patternTransform="rotate(8)">
+                        <path d="M0 34 q 11 -9 23 0 t 23 0" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="2" />
+                        <path d="M0 14 q 11 -9 23 0 t 23 0" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="2" />
+                    </pattern>
+                </defs>
+
+                <!-- Sea background -->
+                <rect x="0" y="0" width="@ViewWidth" height="@ViewHeight" fill="url(#water)" rx="14" />
+                <rect x="0" y="0" width="@ViewWidth" height="@ViewHeight" fill="url(#ripple)" rx="14" />
+
+                <!-- Bridges (drawn under the islands) -->
+                @foreach (var bridge in _board.Bridges)
+                {
+                    if (bridge.Count == 0)
+                    {
+                        continue;
+                    }
+                    var (x1, y1) = Center(bridge.A);
+                    var (x2, y2) = Center(bridge.B);
+                    if (bridge.Count == 1)
+                    {
+                        <line x1="@x1" y1="@y1" x2="@x2" y2="@y2" class="plank-edge" />
+                        <line x1="@x1" y1="@y1" x2="@x2" y2="@y2" class="plank" />
+                    }
+                    else
+                    {
+                        var off = 7;
+                        if (bridge.IsHorizontal)
+                        {
+                            <line x1="@x1" y1="@(y1 - off)" x2="@x2" y2="@(y2 - off)" class="plank-edge" />
+                            <line x1="@x1" y1="@(y1 - off)" x2="@x2" y2="@(y2 - off)" class="plank" />
+                            <line x1="@x1" y1="@(y1 + off)" x2="@x2" y2="@(y2 + off)" class="plank-edge" />
+                            <line x1="@x1" y1="@(y1 + off)" x2="@x2" y2="@(y2 + off)" class="plank" />
+                        }
+                        else
+                        {
+                            <line x1="@(x1 - off)" y1="@y1" x2="@(x2 - off)" y2="@y2" class="plank-edge" />
+                            <line x1="@(x1 - off)" y1="@y1" x2="@(x2 - off)" y2="@y2" class="plank" />
+                            <line x1="@(x1 + off)" y1="@y1" x2="@(x2 + off)" y2="@y2" class="plank-edge" />
+                            <line x1="@(x1 + off)" y1="@y1" x2="@(x2 + off)" y2="@y2" class="plank" />
+                        }
+                    }
+                }
+
+                <!-- Invisible clickable hit-areas over each candidate bridge span.
+                     Drawn above the visible bridge lines but below the islands. -->
+                @foreach (var bridge in _board.Bridges)
+                {
+                    var (hx1, hy1) = Center(bridge.A);
+                    var (hx2, hy2) = Center(bridge.B);
+                    var captured = bridge;
+                    <line x1="@hx1" y1="@hy1" x2="@hx2" y2="@hy2" class="bridge-hit"
+                          @onclick="() => OnBridgeClick(captured)" />
+                }
+
+                <!-- Islands -->
+                @foreach (var island in _board.Islands)
+                {
+                    var (cx, cy) = Center(island);
+                    var satisfied = _board.DegreeOf(island) == island.Required;
+                    var over = _board.DegreeOf(island) > island.Required;
+                    var landFill = over ? "url(#land-over)" : satisfied ? "url(#land-done)" : "url(#land)";
+                    <!-- shore ring, then landmass, then the clue number -->
+                    <circle cx="@cx" cy="@cy" r="@IslandRadius" class="isle-shore" filter="url(#isle-shadow)" />
+                    <circle cx="@cx" cy="@cy" r="@(IslandRadius - 4)" fill="@landFill" class="isle-land" />
+                    <svg:text x="@cx" y="@cy" class="island-label">@island.Required</svg:text>
+                    @if (satisfied)
+                    {
+                        // Cross over islands whose bridge count exactly meets their requirement,
+                        // so completed islands are obvious at a glance.
+                        var d = IslandRadius - 6;
+                        <line x1="@(cx - d)" y1="@(cy - d)" x2="@(cx + d)" y2="@(cy + d)" class="isle-cross" />
+                        <line x1="@(cx + d)" y1="@(cy - d)" x2="@(cx - d)" y2="@(cy + d)" class="isle-cross" />
+                    }
+                }
+            </svg>
+
+            @if (_solved)
+            {
+                <div class="win-overlay">Solved. Nicely done.</div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private PackSize _size;         // currently selected size/shape
+    private Board? _board;          // the playable board
+    private string _puzzleId = "";  // id of the current puzzle (for solved-tracking)
+    private bool _solved;
+
+    // Result of the last "Check" (cheat) action.
+    private string? _checkMessage;
+    private int _checkErrors;
+    private bool _checking; // true while a check is running (shows a busy indicator)
+
+    // Move history for Undo: each entry is the bridge that changed and its count *before* the
+    // change, so undo restores the previous state one step at a time.
+    private readonly Stack<(Bridge bridge, int previousCount)> _history = new();
+
+    // Layout constants for the SVG grid (in user units).
+    private const int Cell = 72;
+    private const int Margin = 28; // keeps edge islands (radius 26) from clipping
+    private const int IslandRadius = 26;
+
+    private int ViewWidth => _board is null ? 0 : Margin * 2 + (_board.Cols - 1) * Cell;
+    private int ViewHeight => _board is null ? 0 : Margin * 2 + (_board.Rows - 1) * Cell;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Pack and progress are already loaded in Program.cs, but guard in case.
+        await Pack.LoadAsync();
+        await Progress.LoadAsync();
+
+        if (Pack.Sizes.Count == 0)
+        {
+            return; // empty pack; nothing to show
+        }
+
+        _size = await PickDefaultSizeAsync();
+        NewGame();
+    }
+
+    /// <summary>
+    /// Choose a starting size that suits the device: a portrait ("Tall") puzzle on phone-shaped
+    /// screens, a square one on wider screens. Falls back to the first available size.
+    /// </summary>
+    private async Task<PackSize> PickDefaultSizeAsync()
+    {
+        bool portrait = false;
+        try
+        {
+            double w = await JS.InvokeAsync<double>("eval", "window.innerWidth");
+            double h = await JS.InvokeAsync<double>("eval", "window.innerHeight");
+            portrait = h > w * 1.1; // clearly taller than wide
+        }
+        catch
+        {
+            // JS unavailable; default to square.
+        }
+
+        var preferred = Pack.Sizes.FirstOrDefault(s => s.IsPortrait == portrait);
+        return preferred == default ? Pack.Sizes[0] : preferred;
+    }
+
+    private void NewGame()
+    {
+        var def = Pack.PickRandom(_size, (HashSet<string>)Progress.SolvedIds.ToHashSet());
+        if (def is null)
+        {
+            _board = null;
+            return;
+        }
+
+        _board = def.ToBoard();
+        _puzzleId = def.Id;
+        _solved = false;
+        _history.Clear();
+        _checkMessage = null;
+    }
+
+    private void OnSizeChanged(ChangeEventArgs e)
+    {
+        var key = e.Value?.ToString();
+        var match = Pack.Sizes.FirstOrDefault(s => SizeKey(s) == key);
+        if (match != default)
+        {
+            _size = match;
+            NewGame(); // immediately switch to a puzzle of the new size
+        }
+    }
+
+    private void ClearBoard()
+    {
+        _board?.ClearAllBridges();
+        _solved = false;
+        _history.Clear();
+        _checkMessage = null;
+    }
+
+    /// <summary>Revert the most recent bridge change, restoring its previous count.</summary>
+    private void Undo()
+    {
+        if (_board is null || _history.Count == 0)
+        {
+            return;
+        }
+
+        var (bridge, previousCount) = _history.Pop();
+        _board.SetBridge(bridge.A, bridge.B, previousCount);
+        _solved = _board.IsSolved();
+        _checkMessage = null;
+    }
+
+    /// <summary>
+    /// Cheat/check: compare the player's drawn bridges against the puzzle's unique solution and
+    /// report how many are wrong (a bridge whose current count doesn't match the solution — too
+    /// many, too few, or one that shouldn't exist / is missing).
+    /// </summary>
+    private async Task CheckErrors()
+    {
+        if (_board is null || _checking)
+        {
+            return;
+        }
+
+        // Show the busy indicator, then yield so the browser actually paints it before we run the
+        // (potentially heavy) solve on the single UI thread.
+        _checking = true;
+        _checkMessage = null;
+        StateHasChanged();
+        await Task.Yield();
+        await Task.Delay(1); // give the browser a frame to render the hourglass
+
+        try
+        {
+            // The puzzle is uniquely solvable, so the solver's answer is the one correct layout.
+            var solution = new Solver(_board).SolveEdges();
+            if (solution is null)
+            {
+                _checkMessage = "Couldn't check this puzzle.";
+                _checkErrors = -1;
+                return;
+            }
+
+            // A "wrong move" is a bridge the player has drawn that doesn't belong in the solution,
+            // or that they've over-built (e.g. a double where the answer is a single). Bridges they
+            // simply haven't drawn yet (count below the solution) are incomplete, not mistakes.
+            int wrong = 0;
+            for (int e = 0; e < _board.Bridges.Count; e++)
+            {
+                int current = _board.Bridges[e].Count;
+                if (current > 0 && current > solution[e])
+                {
+                    wrong++;
+                }
+            }
+
+            _checkErrors = wrong;
+            _checkMessage = wrong == 0
+                ? "No mistakes so far."
+                : wrong == 1 ? "1 bridge is wrong." : $"{wrong} bridges are wrong.";
+        }
+        finally
+        {
+            _checking = false;
+        }
+    }
+
+    private (int x, int y) Center(Island island) =>
+        (Margin + island.Col * Cell, Margin + island.Row * Cell);
+
+    /// <summary>
+    /// Clicking the span between two islands cycles the bridge there: none -> single -> double -> none.
+    /// A move that would cross an existing bridge is rejected by the board and left unchanged.
+    /// </summary>
+    private async Task OnBridgeClick(Bridge bridge)
+    {
+        if (_board is null)
+        {
+            return;
+        }
+
+        int before = bridge.Count;
+        _board.CycleBridge(bridge.A, bridge.B);
+
+        if (bridge.Count != before)
+        {
+            _history.Push((bridge, before));
+        }
+
+        _checkMessage = null; // a move invalidates the previous check result
+
+        _solved = _board.IsSolved();
+        if (_solved && !string.IsNullOrEmpty(_puzzleId))
+        {
+            // Render the win banner immediately so it can't be delayed (or blocked) by the
+            // localStorage write below — persisting progress is best-effort and secondary.
+            StateHasChanged();
+            await Progress.MarkSolvedAsync(_puzzleId);
+        }
+    }
+
+    /// <summary>Stable string key for a size, used as the select option value.</summary>
+    private static string SizeKey(PackSize s) => $"{s.Shape}:{s.Rows}x{s.Cols}";
+}
