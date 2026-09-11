@@ -41,6 +41,21 @@
                 report(); // report the initial state immediately
             }
         };
+
+        // Lets a Blazor component observe whether the app is "active" (tab visible and focused),
+        // so a play timer can pause when the user switches away and resume when they return.
+        window.bridgesActivity = {
+            register: function (dotNetRef) {
+                const report = function () {
+                    const active = !document.hidden && document.hasFocus();
+                    dotNetRef.invokeMethodAsync('OnActiveChanged', active);
+                };
+                document.addEventListener('visibilitychange', report);
+                window.addEventListener('focus', report);
+                window.addEventListener('blur', report);
+                report(); // report the initial state immediately
+            }
+        };
     </script>
 </body>
 

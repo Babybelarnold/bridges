@@ -38,6 +38,12 @@
         {
             <span class="check-message @(_checkErrors == 0 ? "check-ok" : "check-bad")">@_checkMessage</span>
         }
+        @if (_board is not null)
+        {
+            <span class="timer" title="@(_appActive ? "Playing" : "Paused — app not active")">
+                @(_appActive || _solved ? "⏱" : "⏸") @ElapsedText
+            </span>
+        }
     </div>
 
     @if (_board is not null)
@@ -161,7 +167,18 @@
 
             @if (_solved)
             {
-                <div class="win-overlay">Solved. Nicely done.</div>
+                <div class="win-overlay">
+                    <div>Solved. Nicely done.</div>
+                    <div class="win-time">Time: @FormatSeconds(_finishSeconds)</div>
+                    @if (_newBest)
+                    {
+                        <div class="win-best">New best time!</div>
+                    }
+                    else if (Progress.ResultFor(_puzzleId) is { } best)
+                    {
+                        <div class="win-best">Best: @FormatSeconds(best.BestSeconds)</div>
+                    }
+                </div>
             }
         </div>
     }
@@ -210,6 +227,42 @@
     private DotNetObjectReference<Home>? _selfRef;
     private bool _started;
 
+    // ---- Play timer ----
+    // Elapsed time is tracked as accumulated completed spans plus a "running since" mark. This
+    // makes pause/resume exact: when active we count from _runningSince; when paused we fold that
+    // span into _accumulated and stop. A 1s tick just refreshes the display.
+    private TimeSpan _accumulated = TimeSpan.Zero;
+    private DateTime? _runningSince;   // non-null while the clock is actively running
+    private bool _appActive = true;    // tab visible and focused
+    private System.Timers.Timer? _tick;
+    private int _finishSeconds;        // elapsed seconds captured on solve
+    private bool _newBest;             // whether the solve set a new personal best
+
+    /// <summary>mm:ss (or h:mm:ss) formatting for an arbitrary second count.</summary>
+    private static string FormatSeconds(int seconds)
+    {
+        var t = TimeSpan.FromSeconds(seconds);
+        return t.TotalHours >= 1
+            ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}"
+            : $"{t.Minutes:00}:{t.Seconds:00}";
+    }
+
+    /// <summary>Total elapsed play time for the current puzzle (accumulated + current run).</summary>
+    private TimeSpan Elapsed =>
+        _accumulated + (_runningSince is { } since ? DateTime.UtcNow - since : TimeSpan.Zero);
+
+    /// <summary>mm:ss (or h:mm:ss) formatted elapsed time for display.</summary>
+    private string ElapsedText
+    {
+        get
+        {
+            var t = Elapsed;
+            return t.TotalHours >= 1
+                ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}"
+                : $"{t.Minutes:00}:{t.Seconds:00}";
+        }
+    }
+
     protected override async Task OnInitializedAsync()
     {
         // Pack and progress are already loaded in Program.cs, but guard in case.
@@ -223,12 +276,71 @@
     {
         if (firstRender)
         {
-            // Register for orientation updates. The JS helper reports the initial state and then
-            // any resize/rotation, so the visible size list always matches the window shape.
             _selfRef = DotNetObjectReference.Create(this);
+
+            // Orientation updates: the JS helper reports the initial state and any resize/rotation.
             await JS.InvokeVoidAsync("bridgesOrientation.register", _selfRef);
+
+            // Activity updates: pause/resume the timer when the app is backgrounded/foregrounded.
+            await JS.InvokeVoidAsync("bridgesActivity.register", _selfRef);
+
+            // 1-second tick to refresh the timer display while running.
+            _tick = new System.Timers.Timer(1000) { AutoReset = true };
+            _tick.Elapsed += async (_, _) => await InvokeAsync(() =>
+            {
+                if (_runningSince is not null)
+                {
+                    StateHasChanged();
+                }
+            });
+            _tick.Start();
         }
     }
+
+    /// <summary>Called from JS when the app becomes active/inactive. Pauses or resumes the timer.</summary>
+    [JSInvokable]
+    public void OnActiveChanged(bool active)
+    {
+        _appActive = active;
+        if (active)
+        {
+            ResumeTimer();
+        }
+        else
+        {
+            PauseTimer();
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>Start the clock fresh for a new puzzle.</summary>
+    private void StartTimer()
+    {
+        _accumulated = TimeSpan.Zero;
+        _runningSince = _appActive ? DateTime.UtcNow : null;
+    }
+
+    /// <summary>Fold the current run into the accumulated total and stop counting.</summary>
+    private void PauseTimer()
+    {
+        if (_runningSince is { } since)
+        {
+            _accumulated += DateTime.UtcNow - since;
+            _runningSince = null;
+        }
+    }
+
+    /// <summary>Resume counting (only if the puzzle isn't already solved).</summary>
+    private void ResumeTimer()
+    {
+        if (!_solved && _runningSince is null)
+        {
+            _runningSince = DateTime.UtcNow;
+        }
+    }
+
+    /// <summary>Stop the clock on solve, freezing the elapsed total.</summary>
+    private void StopTimer() => PauseTimer();
 
     /// <summary>Called from JS when the window orientation changes (and once on registration).</summary>
     [JSInvokable]
@@ -258,7 +370,11 @@
         StateHasChanged();
     }
 
-    public void Dispose() => _selfRef?.Dispose();
+    public void Dispose()
+    {
+        _tick?.Dispose();
+        _selfRef?.Dispose();
+    }
 
     private void NewGame()
     {
@@ -274,6 +390,7 @@
         _solved = false;
         _history.Clear();
         _checkMessage = null;
+        StartTimer();
     }
 
     private void OnSizeChanged(ChangeEventArgs e)
@@ -391,10 +508,14 @@
         _solved = _board.IsSolved();
         if (_solved && !string.IsNullOrEmpty(_puzzleId))
         {
+            // Freeze the clock and remember the finish time for the win banner.
+            StopTimer();
+            _finishSeconds = (int)Math.Round(Elapsed.TotalSeconds);
+
             // Render the win banner immediately so it can't be delayed (or blocked) by the
             // localStorage write below — persisting progress is best-effort and secondary.
             StateHasChanged();
-            await Progress.MarkSolvedAsync(_puzzleId);
+            _newBest = await Progress.RecordSolveAsync(_puzzleId, _finishSeconds);
         }
     }
 

@@ -120,6 +120,29 @@
     to   { transform: translate(-50%, -50%) scale(1);   opacity: 1; }
 }
 
+.timer {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    background: #0f3d52;
+    color: #e8f4fb;
+    white-space: nowrap;
+}
+
+.win-time {
+    font-size: 0.85em;
+    font-weight: 700;
+    margin-top: 0.35rem;
+}
+
+.win-best {
+    font-size: 0.75em;
+    font-weight: 700;
+    opacity: 0.9;
+    margin-top: 0.15rem;
+}
+
 .check-message {
     font-weight: 600;
     padding: 0.3rem 0.6rem;
